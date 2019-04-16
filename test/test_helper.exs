@@ -1,4 +1,5 @@
 Code.load_file("test/support/test_plug.ex")
+Code.load_file("test/support/gzip_json_plug_parser.ex")
 Code.require_file("test/support/test_environment_helper.exs")
 Code.require_file("test/support/test_before_send_event.exs")
 Code.require_file("test/support/test_filter.exs")

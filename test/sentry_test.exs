@@ -7,8 +7,9 @@ defmodule SentryTest do
     bypass = Bypass.open()
 
     Bypass.expect(bypass, fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
-      assert body =~ "RuntimeError"
+      opts = Plug.Parsers.init([parsers: [Sentry.Plug.Parsers.GzipJSON, :json], json_decoder: Jason])
+      conn = Plug.Parsers.call(conn, opts)
+      assert conn.body =~ "RuntimeError"
       assert conn.request_path == "/api/1/store/"
       assert conn.method == "POST"
       Plug.Conn.resp(conn, 200, ~s<{"id": "340"}>)

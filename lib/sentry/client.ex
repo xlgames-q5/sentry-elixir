@@ -80,6 +80,7 @@ defmodule Sentry.Client do
     |> json_library.encode()
     |> case do
       {:ok, body} ->
+        body = :zlib.gzip(body)
         do_send_event(event, body, result)
 
       {:error, error} ->
@@ -328,7 +329,9 @@ defmodule Sentry.Client do
   defp get_headers_and_endpoint do
     case get_dsn() do
       {endpoint, public_key, secret_key} ->
-        {endpoint, authorization_headers(public_key, secret_key)}
+        headers = [{"Content-Encoding", "gzip"}, {"Content-Type", "application/json"}] ++ authorization_headers(public_key, secret_key)
+
+        {endpoint, headers}
 
       _ ->
         :error
