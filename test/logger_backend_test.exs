@@ -92,6 +92,36 @@ defmodule Sentry.LoggerBackendTest do
     end)
   end
 
+  test "GenServer.call/3 timeout makes call to Sentry API" do
+    self_pid = self()
+    Process.flag(:trap_exit, true)
+    bypass = Bypass.open()
+
+    Bypass.expect(bypass, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      json = Jason.decode!(body)
+
+      IO.inspect(json)
+      assert conn.request_path == "/api/1/store/"
+      assert conn.method == "POST"
+      send(self_pid, "API called")
+      Plug.Conn.resp(conn, 200, ~s<{"id": "340"}>)
+    end)
+
+    modify_env(:sentry, dsn: "http://public:secret@localhost:#{bypass.port}/1")
+
+    capture_log(fn ->
+      {:ok, pid} = Sentry.TestGenServer.start_link(self_pid)
+
+      {:ok, task} =
+        Task.start(fn ->
+          GenServer.call(pid, {:sleep, 100}, 50)
+        end)
+
+      assert_receive "API called"
+    end)
+  end
+
   test "Bad function call causing GenServer crash makes call to Sentry API" do
     self_pid = self()
     Process.flag(:trap_exit, true)
