@@ -66,7 +66,7 @@ defmodule Sentry.Client do
 
     event = maybe_call_before_send_event(event)
 
-    if sample_event?(sample_rate) do
+    if sample_event?(sample_rate) && event do
       encode_and_send(event, result)
     else
       :unsampled
@@ -257,7 +257,7 @@ defmodule Sentry.Client do
     result
   end
 
-  @spec maybe_call_before_send_event(Event.t()) :: Event.t()
+  @spec maybe_call_before_send_event(Event.t()) :: Event.t() | false
   def maybe_call_before_send_event(event) do
     case Config.before_send_event() do
       function when is_function(function, 1) ->
