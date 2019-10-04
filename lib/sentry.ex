@@ -105,6 +105,7 @@ defmodule Sentry do
 
     validate_json_config!()
     validate_log_level_config!()
+    warn_for_deprecated_config()
 
     opts = [strategy: :one_for_one, name: Sentry.Supervisor]
     Supervisor.start_link(children, opts)
@@ -201,6 +202,16 @@ defmodule Sentry do
       :ok
     else
       raise ArgumentError.exception("#{inspect(value)} is not a valid :log_level configuration")
+    end
+  end
+
+  defp warn_for_deprecated_config() do
+    if Config.filter() != Sentry.DefaultEventFilter do
+      """
+      The :event_filter configuration has been deprecated in favor of :before_send_event
+      For more, details see: https://gist.github.com/
+      """
+      |> IO.warn()
     end
   end
 end
