@@ -69,6 +69,10 @@ defmodule Sentry.LoggerBackend do
     {:ok, :ok, struct(state, config)}
   end
 
+  def handle_event({:warn, gl, msg}, state) do
+    handle_event({:warning, gl, msg}, state)
+  end
+
   def handle_event({level, _gl, {Logger, msg, _ts, meta}}, state) do
     if Logger.compare_levels(level, state.level) != :lt and
          not excluded_domain?(meta[:domain], state) do
