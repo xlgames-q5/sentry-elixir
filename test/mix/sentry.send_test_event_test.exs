@@ -1,25 +1,24 @@
 defmodule Mix.Tasks.Sentry.SendTestEventTest do
-  use ExUnit.Case
+  use Sentry.Case
+
   import ExUnit.CaptureIO
-  import ExUnit.CaptureLog
-  import Sentry.TestEnvironmentHelper
+  import Sentry.TestHelpers
 
-  test "prints if environment_name is not in included_environments" do
-    modify_env(:sentry, dsn: "http://public:secret@localhost:43/1", included_environments: [])
+  test "prints if :dsn is not set" do
+    put_test_config(dsn: nil, hackney_opts: [], environment_name: "some_env")
 
-    assert capture_io(fn ->
-             Mix.Tasks.Sentry.SendTestEvent.run([])
-           end) == """
+    output =
+      capture_io(fn ->
+        Mix.Tasks.Sentry.SendTestEvent.run([])
+      end)
+
+    assert output =~ """
            Client configuration:
-           server: http://localhost:43/api/1/envelope/
-           public_key: public
-           secret_key: secret
-           included_environments: []
-           current environment_name: :test
-           hackney_opts: [recv_timeout: 50]
-
-           :test is not in [] so no test event will be sent
+           current environment_name: "some_env"
+           hackney_opts: []
            """
+
+    assert output =~ ~s(Event not sent because the :dsn option is not set)
   end
 
   test "sends event successfully when configured to" do
@@ -33,27 +32,32 @@ defmodule Mix.Tasks.Sentry.SendTestEventTest do
       Plug.Conn.resp(conn, 200, ~s<{"id": "340"}>)
     end)
 
-    modify_env(
-      :sentry,
-      dsn: "http://public:secret@localhost:#{bypass.port}/1"
+    put_test_config(
+      dsn: "http://public:secret@localhost:#{bypass.port}/1",
+      environment_name: "test",
+      hackney_opts: []
     )
 
-    assert capture_io(fn ->
-             Mix.Tasks.Sentry.SendTestEvent.run([])
-           end) == """
+    output =
+      capture_io(fn ->
+        Mix.Tasks.Sentry.SendTestEvent.run([])
+      end)
+
+    assert output =~ """
            Client configuration:
            server: http://localhost:#{bypass.port}/api/1/envelope/
            public_key: public
            secret_key: secret
-           included_environments: [:test]
-           current environment_name: :test
-           hackney_opts: [recv_timeout: 50]
-
-           Sending test event...
-           Test event sent!  Event ID: 340
+           current environment_name: "test"
+           hackney_opts: []
            """
+
+    assert output =~ "Sending test event..."
+    assert output =~ "Test event sent"
+    assert output =~ "Event ID: 340"
   end
 
+  @tag :capture_log
   test "handles error when Sentry server is failing" do
     bypass = Bypass.open()
 
@@ -62,23 +66,17 @@ defmodule Mix.Tasks.Sentry.SendTestEventTest do
       Plug.Conn.resp(conn, 500, ~s<{"id": "340"}>)
     end)
 
-    modify_env(:sentry, dsn: "http://public:secret@localhost:#{bypass.port}/1")
+    original_retries =
+      Application.get_env(:sentry, :request_retries, Sentry.Transport.default_retries())
 
-    assert capture_log(fn ->
-             assert capture_io(fn ->
-                      Mix.Tasks.Sentry.SendTestEvent.run([])
-                    end) == """
-                    Client configuration:
-                    server: http://localhost:#{bypass.port}/api/1/envelope/
-                    public_key: public
-                    secret_key: secret
-                    included_environments: [:test]
-                    current environment_name: :test
-                    hackney_opts: [recv_timeout: 50]
+    on_exit(fn -> Application.put_env(:sentry, :request_retries, original_retries) end)
 
-                    Sending test event...
-                    Error sending event: {:request_failure, "Received 500 from Sentry server: "}
-                    """
-           end) =~ "Failed to send Sentry event"
+    Application.put_env(:sentry, :request_retries, [])
+
+    put_test_config(dsn: "http://public:secret@localhost:#{bypass.port}/1")
+
+    assert_raise Mix.Error, ~r/Error sending event/, fn ->
+      capture_io(fn -> Mix.Tasks.Sentry.SendTestEvent.run([]) end)
+    end
   end
 end

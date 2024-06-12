@@ -1,133 +1,117 @@
 defmodule Sentry.EnvelopeTest do
-  use ExUnit.Case
-  alias Sentry.Envelope
+  use Sentry.Case, async: false
 
-  describe "from_binary/1" do
-    test "parses envelope with empty headers" do
-      raw = "{}\n"
+  import Sentry.TestHelpers
 
-      {:ok, envelope} = Envelope.from_binary(raw)
+  alias Sentry.{Attachment, CheckIn, Envelope, Event}
 
-      assert envelope.event_id == nil
-      assert envelope.items == []
+  describe "to_binary/1" do
+    test "encodes an envelope" do
+      put_test_config(environment_name: "test")
+      event = Event.create_event([])
+
+      envelope = Envelope.from_event(event)
+
+      assert {:ok, encoded} = Envelope.to_binary(envelope)
+
+      assert [id_line, header_line, event_line] = String.split(encoded, "\n", trim: true)
+      assert Jason.decode!(id_line) == %{"event_id" => event.event_id}
+      assert %{"type" => "event", "length" => _} = Jason.decode!(header_line)
+
+      assert {:ok, decoded_event} = Jason.decode(event_line)
+      assert decoded_event["event_id"] == event.event_id
+      assert decoded_event["breadcrumbs"] == []
+      assert decoded_event["environment"] == "test"
+      assert decoded_event["exception"] == []
+      assert decoded_event["extra"] == %{}
+      assert decoded_event["user"] == %{}
+      assert decoded_event["request"] == %{}
     end
 
-    test "parses envelope with only headers" do
-      raw = "{\"event_id\":\"12c2d058d58442709aa2eca08bf20986\"}\n"
+    test "works without an event ID" do
+      envelope = Envelope.from_event(Event.create_event([]))
+      envelope = %Envelope{envelope | event_id: nil}
 
-      {:ok, envelope} = Envelope.from_binary(raw)
+      assert {:ok, encoded} = Envelope.to_binary(envelope)
 
-      assert envelope.event_id == "12c2d058d58442709aa2eca08bf20986"
-      assert envelope.items == []
+      assert [id_line, _header_line, _event_line] = String.split(encoded, "\n", trim: true)
+
+      assert id_line == "{{}}"
     end
 
-    test "parses envelope containing an event" do
-      event = %Sentry.Event{
-        breadcrumbs: [],
-        culprit: nil,
-        environment: :test,
-        event_id: "1d208b37d9904203918a9c2125ea91fa",
-        event_source: nil,
-        exception: nil,
-        extra: %{},
-        fingerprint: ["{{ default }}"],
-        level: "error",
-        message: "hello",
-        modules: %{
-          bypass: "2.1.0",
-          certifi: "2.6.1",
-          cowboy: "2.8.0",
-          cowboy_telemetry: "0.3.1",
-          cowlib: "2.9.1",
-          dialyxir: "1.1.0",
-          erlex: "0.2.6",
-          hackney: "1.17.4",
-          idna: "6.1.1",
-          jason: "1.2.2",
-          metrics: "1.0.1",
-          mime: "1.5.0",
-          mimerl: "1.2.0",
-          parse_trans: "3.3.1",
-          phoenix: "1.5.8",
-          phoenix_html: "2.14.3",
-          phoenix_pubsub: "2.0.0",
-          plug: "1.11.1",
-          plug_cowboy: "2.4.1",
-          plug_crypto: "1.2.2",
-          ranch: "1.7.1",
-          ssl_verify_fun: "1.1.6",
-          telemetry: "0.4.2",
-          unicode_util_compat: "0.7.0"
-        },
-        original_exception: nil,
-        platform: "elixir",
-        release: nil,
-        request: %{},
-        server_name: "john-linux",
-        stacktrace: %{frames: []},
-        tags: %{},
-        timestamp: "2021-10-09T03:53:22",
-        user: %{}
-      }
+    test "works with attachments" do
+      attachments = [
+        %Attachment{data: <<1, 2, 3>>, filename: "example.dat"},
+        %Attachment{data: "Hello!", filename: "example.txt", content_type: "text/plain"},
+        %Attachment{data: "{}", filename: "example.json", content_type: "application/json"},
+        %Attachment{data: "...", filename: "dump", attachment_type: "event.minidump"}
+      ]
 
-      {:ok, raw_envelope} =
-        Sentry.Envelope.new()
-        |> Sentry.Envelope.add_event(event)
-        |> Sentry.Envelope.to_binary()
+      event = %Event{Event.create_event([]) | attachments: attachments}
 
-      {:ok, envelope} = Envelope.from_binary(raw_envelope)
+      assert {:ok, encoded} = event |> Envelope.from_event() |> Envelope.to_binary()
 
-      assert envelope.event_id == event.event_id
+      assert [
+               id_line,
+               _event_header,
+               _event_data,
+               attachment1_header,
+               <<1, 2, 3>>,
+               attachment2_header,
+               "Hello!",
+               attachment3_header,
+               "{}",
+               attachment4_header,
+               "..."
+             ] = String.split(encoded, "\n", trim: true)
 
-      assert envelope.items == [
-               %Sentry.Event{
-                 breadcrumbs: [],
-                 culprit: nil,
-                 environment: "test",
-                 event_id: "1d208b37d9904203918a9c2125ea91fa",
-                 event_source: nil,
-                 exception: nil,
-                 extra: %{},
-                 fingerprint: ["{{ default }}"],
-                 level: "error",
-                 message: "hello",
-                 modules: %{
-                   "bypass" => "2.1.0",
-                   "certifi" => "2.6.1",
-                   "cowboy" => "2.8.0",
-                   "cowboy_telemetry" => "0.3.1",
-                   "cowlib" => "2.9.1",
-                   "dialyxir" => "1.1.0",
-                   "erlex" => "0.2.6",
-                   "hackney" => "1.17.4",
-                   "idna" => "6.1.1",
-                   "jason" => "1.2.2",
-                   "metrics" => "1.0.1",
-                   "mime" => "1.5.0",
-                   "mimerl" => "1.2.0",
-                   "parse_trans" => "3.3.1",
-                   "phoenix" => "1.5.8",
-                   "phoenix_html" => "2.14.3",
-                   "phoenix_pubsub" => "2.0.0",
-                   "plug" => "1.11.1",
-                   "plug_cowboy" => "2.4.1",
-                   "plug_crypto" => "1.2.2",
-                   "ranch" => "1.7.1",
-                   "ssl_verify_fun" => "1.1.6",
-                   "telemetry" => "0.4.2",
-                   "unicode_util_compat" => "0.7.0"
-                 },
-                 original_exception: nil,
-                 platform: "elixir",
-                 release: nil,
-                 request: %{},
-                 server_name: "john-linux",
-                 stacktrace: %{frames: []},
-                 tags: %{},
-                 timestamp: "2021-10-09T03:53:22",
-                 user: %{}
-               }
-             ]
+      assert %{"event_id" => _} = Jason.decode!(id_line)
+
+      assert Jason.decode!(attachment1_header) == %{
+               "type" => "attachment",
+               "length" => 3,
+               "filename" => "example.dat"
+             }
+
+      assert Jason.decode!(attachment2_header) == %{
+               "type" => "attachment",
+               "length" => 6,
+               "filename" => "example.txt",
+               "content_type" => "text/plain"
+             }
+
+      assert Jason.decode!(attachment3_header) == %{
+               "type" => "attachment",
+               "length" => 2,
+               "filename" => "example.json",
+               "content_type" => "application/json"
+             }
+
+      assert Jason.decode!(attachment4_header) == %{
+               "type" => "attachment",
+               "length" => 3,
+               "filename" => "dump",
+               "attachment_type" => "event.minidump"
+             }
+    end
+
+    test "works with check-ins" do
+      put_test_config(environment_name: "test")
+      check_in_id = Sentry.UUID.uuid4_hex()
+      check_in = %CheckIn{check_in_id: check_in_id, monitor_slug: "test", status: :ok}
+
+      envelope = Envelope.from_check_in(check_in)
+
+      assert {:ok, encoded} = Envelope.to_binary(envelope)
+
+      assert [id_line, header_line, event_line] = String.split(encoded, "\n", trim: true)
+      assert %{"event_id" => _} = Jason.decode!(id_line)
+      assert %{"type" => "check_in", "length" => _} = Jason.decode!(header_line)
+
+      assert {:ok, decoded_check_in} = Jason.decode(event_line)
+      assert decoded_check_in["check_in_id"] == check_in_id
+      assert decoded_check_in["monitor_slug"] == "test"
+      assert decoded_check_in["status"] == "ok"
     end
   end
 end

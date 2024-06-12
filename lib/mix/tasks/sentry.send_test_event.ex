@@ -2,77 +2,113 @@ defmodule Mix.Tasks.Sentry.SendTestEvent do
   use Mix.Task
   alias Sentry.Config
 
-  @shortdoc "Attempts to send a test event to check Sentry configuration"
+  @shortdoc "Send a test event to Sentry to check your Sentry configuration"
+
   @moduledoc """
-  Send test even to check if Sentry configuration is correct.
+  Sends a test event to Sentry to check if your Sentry configuration is correct.
+
+  This task reports a `RuntimeError` exception like this one:
+
+      %RuntimeError{message: "Testing sending Sentry event"}
+
+  ## Options
+
+    * `--no-compile` - does not compile, even if files require compilation.
+    * `--type` - `exception` or `message`. Defaults to `exception`. *Available since v10.1.0.*.
+    * `--no-stacktrace` - does not include a stacktrace in the reported event. *Available since
+      v10.1.0.*.
+
   """
 
-  def run(args) do
-    unless "--no-compile" in args do
+  @switches [
+    compile: :boolean,
+    stacktrace: :boolean,
+    type: :string
+  ]
+
+  @impl true
+  def run(args) when is_list(args) do
+    {opts, args} = OptionParser.parse!(args, strict: @switches)
+
+    if Keyword.get(opts, :compile, true) do
       Mix.Task.run("compile", args)
     end
 
-    Application.ensure_all_started(:sentry)
+    Mix.Task.run("loadconfig")
+    Mix.Task.run("app.config")
 
-    Sentry.Client.get_dsn()
-    |> print_environment_info()
+    case Application.ensure_all_started(:sentry) do
+      {:ok, _apps} ->
+        :ok
 
-    maybe_send_event()
-  end
+      {:error, reason} ->
+        Mix.raise("Failed to start the :sentry application:\n\n#{inspect(reason)}")
+    end
 
-  defp print_environment_info({endpoint, public_key, secret_key}) do
-    Mix.shell().info("Client configuration:")
-    Mix.shell().info("server: #{endpoint}")
-    Mix.shell().info("public_key: #{public_key}")
-    Mix.shell().info("secret_key: #{secret_key}")
-    Mix.shell().info("included_environments: #{inspect(included_environments())}")
-    Mix.shell().info("current environment_name: #{inspect(Config.environment_name())}")
-    Mix.shell().info("hackney_opts: #{inspect(Config.hackney_opts())}\n")
-  end
+    print_environment_info()
 
-  defp included_environments do
-    case Application.fetch_env(:sentry, :included_environments) do
-      {:ok, envs} when is_list(envs) ->
-        envs
-
-      _ ->
-        Mix.raise(
-          "Sentry included_environments is not configured in :sentry, :included_environments"
-        )
+    if Config.dsn() do
+      send_event(opts)
+    else
+      Mix.shell().info([
+        :yellow,
+        "Event not sent because the :dsn option is not set (or set to nil)"
+      ])
     end
   end
 
-  defp maybe_send_event do
-    env_name = Config.environment_name()
-    included_envs = included_environments()
+  defp print_environment_info do
+    Mix.shell().info("Client configuration:")
 
-    if env_name in included_envs do
-      Mix.shell().info("Sending test event...")
+    if dsn = Config.dsn() do
+      Mix.shell().info("server: #{dsn.endpoint_uri}")
+      Mix.shell().info("public_key: #{dsn.public_key}")
+      Mix.shell().info("secret_key: #{dsn.secret_key}")
+    end
 
-      result =
-        "Testing sending Sentry event"
-        |> RuntimeError.exception()
-        |> Sentry.capture_exception(result: :sync)
+    Mix.shell().info("current environment_name: #{inspect(to_string(Config.environment_name()))}")
+    Mix.shell().info("hackney_opts: #{inspect(Config.hackney_opts())}\n")
+  end
 
-      case result do
-        {:ok, id} ->
-          Mix.shell().info("Test event sent!  Event ID: #{id}")
+  defp send_event(opts) do
+    stacktrace_opts =
+      if Keyword.get(opts, :stacktrace, true) do
+        {:current_stacktrace, stacktrace} = Process.info(self(), :current_stacktrace)
+        [stacktrace: stacktrace]
+      else
+        []
+      end
 
-        {:error, reason} ->
-          Mix.shell().info("Error sending event: #{inspect(reason)}")
+    Mix.shell().info("Sending test event...")
 
-        :excluded ->
-          Mix.shell().info("No test event was sent because the event was excluded by a filter")
+    result =
+      case Keyword.get(opts, :type, "exception") do
+        "exception" ->
+          exception = %RuntimeError{message: "Testing sending Sentry event"}
+          Sentry.capture_exception(exception, [result: :sync] ++ stacktrace_opts)
 
-        :unsampled ->
-          Mix.shell().info(
-            "No test event was sent because the event was excluded according to the sample_rate"
+        "message" ->
+          Sentry.capture_message(
+            "Testing sending Sentry event",
+            [result: :sync] ++ stacktrace_opts
           )
       end
-    else
-      Mix.shell().info(
-        "#{inspect(env_name)} is not in #{inspect(included_envs)} so no test event will be sent"
-      )
+
+    case result do
+      {:ok, id} ->
+        Mix.shell().info([:green, :bright, "Test event sent", :reset, "\nEvent ID: #{id}"])
+
+      {:error, reason} ->
+        Mix.raise("Error sending event:\n\n#{inspect(reason)}")
+
+      :excluded ->
+        Mix.shell().info("No test event was sent because the event was excluded by a filter")
+
+      :unsampled ->
+        Mix.shell().info("""
+        No test event was sent because the event was excluded according to the :sample_rate \
+        configuration option.
+        """)
     end
   end
 end

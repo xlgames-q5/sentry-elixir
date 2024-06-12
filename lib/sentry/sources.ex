@@ -1,103 +1,123 @@
 defmodule Sentry.Sources do
+  @moduledoc false
+
   alias Sentry.Config
 
-  @moduledoc """
-  This module is responsible for providing functionality that stores
-  the text of source files during compilation for displaying the
-  source code that caused an exception.
+  @type source_map :: %{
+          optional(String.t()) => %{
+            (line_no :: pos_integer()) => line_contents :: String.t()
+          }
+        }
 
-  ### Configuration
-  There is configuration required to set up this functionality.  The options
-  include `:enable_source_code_context`, `:root_source_code_paths`, `:context_lines`,
-  `:source_code_exclude_patterns`, and `:source_code_path_pattern`. The options must
-  be set at compile-time.
+  @source_code_map_key {:sentry, :source_code_map}
+  @compression_level if Mix.env() == :test, do: 0, else: 9
 
-  * `:enable_source_code_context` - when `true`, enables reporting source code
-    alongside exceptions.
-  * `:root_source_code_paths` - List of paths from which to start recursively reading files from.
-    Should usually be set to `[File.cwd!()]`. For umbrella applications you should list all your
-    applications paths in this list (e.g. `["#{File.cwd!()}/apps/app_1", "#{File.cwd!()}/apps/app_2"]`.
-  * `:context_lines` - The number of lines of source code before and after the line that
-    caused the exception to be included.  Defaults to `3`.
-  * `:source_code_exclude_patterns` - a list of Regex expressions used to exclude file paths that
-    should not be stored or referenced when reporting exceptions.  Defaults to
-    `[~r"/_build/", ~r"/deps/", ~r"/priv/"]`.
-  * `:source_code_path_pattern` - a glob that is expanded to select files from the
-    `:root_source_code_path`.  Defaults to `"**/*.ex"`.
+  # Default argument is here for testing.
+  @spec load_source_code_map_if_present(Path.t() | nil) ::
+          {:loaded, source_map()} | {:error, term()}
+  def load_source_code_map_if_present(path_for_tests \\ nil) do
+    path = path_for_tests || Config.source_code_map_path() || path_of_packaged_source_code()
+    path = Path.relative_to_cwd(path)
 
-  An example configuration:
+    with {:ok, contents} <- File.read(path),
+         {:ok, source_map} <- decode_source_code_map(contents) do
+      :persistent_term.put(@source_code_map_key, source_map)
+      {:loaded, source_map}
+    else
+      {:error, :binary_to_term} ->
+        IO.warn("""
+        Sentry found a source code map file at #{path}, but it was unable to decode its
+        contents.
+        """)
 
-      config :sentry,
-        dsn: "https://public:secret@app.getsentry.com/1",
-        enable_source_code_context: true,
-        root_source_code_path: [File.cwd!()],
-        context_lines: 5
+        {:error, :decoding_error}
 
-  ### Source code storage
+      {:error, :enoent} ->
+        {:error, :enoent}
 
-  The file contents are saved when Sentry is compiled, which can cause some
-  complications. If a file is changed, and Sentry is not recompiled,
-  it will still report old source code.
+      {:error, reason} ->
+        IO.warn("""
+        Sentry found a source code map file at #{path}, but it was unable to read it.
+        The reason was: #{:file.format_error(reason)}
+        """)
 
-  The best way to ensure source code is up to date is to recompile Sentry
-  itself via `mix deps.compile sentry --force`.  It's possible to create a Mix
-  Task alias in `mix.exs` to do this.  The example below would allow one to
-  run `mix.sentry_recompile && mix compile` which will force recompilation of Sentry so
-  it has the newest source and then compile the project. The second `mix compile`
-  is required due to Mix only invoking the same task once in an alias.
-
-      defp aliases do
-        [sentry_recompile: ["compile", "deps.compile sentry --force"]]
-      end
-
-  This is an important to note especially when building for production. If your
-  build or deployment system caches prior builds, it may not recompile Sentry
-  and could cause issues with reported source code being out of date.
-
-  Due to Sentry reading the file system and defaulting to a recursive search
-  of directories, it is important to check your configuration and compilation
-  environment to avoid a folder recursion issue. Problems may be seen when
-  deploying to the root folder, so it is best to follow the practice of
-  compiling your application in its own folder. Modifying the
-  `source_code_path_pattern` configuration option from its default is also
-  an avenue to avoid compile problems.
-
-  """
-  @type file_map :: %{pos_integer() => String.t()}
-  @type source_map :: %{String.t() => file_map}
-
-  def load_files do
-    Enum.reduce(
-      Config.root_source_code_paths(),
-      %{},
-      &load_files_for_root_path/2
-    )
+        {:error, reason}
+    end
   end
 
-  @doc """
-  Given the source code map, a filename and a line number, this method retrieves the source code context.
+  @spec path_of_packaged_source_code() :: Path.t()
+  def path_of_packaged_source_code do
+    Path.join([Application.app_dir(:sentry), "priv", "sentry.map"])
+  end
 
-  When reporting source code context to the Sentry API, it expects three separate values.  They are the source code
-  for the specific line the error occurred on, the list of the source code for the lines preceding, and the
-  list of the source code for the lines following.  The number of lines in the lists depends on what is
-  configured in `:context_lines`.  The number configured is how many lines to get on each side of the line that
-  caused the error.  If it is configured to be `3`, the method will attempt to get the 3 lines preceding, the
-  3 lines following, and the line that the error occurred on, for a possible maximum of 7 lines.
+  @spec encode_source_code_map(source_map()) :: binary()
+  def encode_source_code_map(%{} = source_map) do
+    # This term contains no atoms, so that it can be decoded with binary_to_term(bin, [:safe]).
+    term_to_encode = %{"version" => 1, "files_map" => source_map}
+    :erlang.term_to_binary(term_to_encode, compressed: @compression_level)
+  end
 
-  The three values are returned in a three element tuple as `{preceding_source_code_list, source_code_from_error_line, following_source_code_list}`.
-  """
-  @spec get_source_context(source_map, String.t(), pos_integer()) ::
+  defp decode_source_code_map(binary) when is_binary(binary) do
+    try do
+      :erlang.binary_to_term(binary, [:safe])
+    rescue
+      ArgumentError -> {:error, :binary_to_term}
+    else
+      %{"version" => 1, "files_map" => source_map} -> {:ok, source_map}
+    end
+  end
+
+  @spec get_source_code_map_from_persistent_term() :: source_map() | nil
+  def get_source_code_map_from_persistent_term do
+    :persistent_term.get(@source_code_map_key, nil)
+  end
+
+  @spec load_files(keyword()) :: {:ok, source_map()} | {:error, message :: String.t()}
+  def load_files(config \\ []) when is_list(config) do
+    config = Sentry.Config.validate!(config)
+
+    path_pattern = Keyword.fetch!(config, :source_code_path_pattern)
+    exclude_patterns = Keyword.fetch!(config, :source_code_exclude_patterns)
+
+    config
+    |> Keyword.fetch!(:root_source_code_paths)
+    |> Enum.reduce(%{}, &load_files_for_root_path(&1, &2, path_pattern, exclude_patterns))
+    |> Map.new(fn {path, %{lines: lines}} -> {path, lines} end)
+  catch
+    {:same_relative_path, path, root_path1, root_path2} ->
+      message = """
+      Found two source files in different source root paths with the same relative path:
+
+        1. #{root_path1 |> Path.join(path) |> Path.relative_to_cwd()}
+        2. #{root_path2 |> Path.join(path) |> Path.relative_to_cwd()}
+
+      The part of those paths that causes the conflict is:
+
+        #{path}
+
+      Sentry cannot report the right source code context if this happens, because
+      it won't be able to retrieve the correct file from exception stacktraces.
+
+      To fix this, you'll have to rename one of the conflicting paths.
+      """
+
+      {:error, message}
+  else
+    source_map -> {:ok, source_map}
+  end
+
+  @spec get_source_context(source_map(), String.t() | nil, pos_integer() | nil) ::
           {[String.t()], String.t() | nil, [String.t()]}
-  def get_source_context(files, file_name, line_number) do
+  def get_source_context(%{} = files, file_name, line_number) do
     context_lines = Config.context_lines()
-    file = Map.get(files, file_name)
 
-    do_get_source_context(file, line_number, context_lines)
+    case Map.fetch(files, file_name) do
+      :error -> {[], nil, []}
+      {:ok, file} -> get_source_context_for_file(file, line_number, context_lines)
+    end
   end
 
-  defp do_get_source_context(nil, _, _), do: {[], nil, []}
-
-  defp do_get_source_context(file, line_number, context_lines) do
+  defp get_source_context_for_file(file, line_number, context_lines) do
     context_line_indices = 0..(2 * context_lines)
 
     Enum.reduce(context_line_indices, {[], nil, []}, fn i, {pre_context, context, post_context} ->
@@ -120,33 +140,26 @@ defmodule Sentry.Sources do
     end)
   end
 
-  defp load_files_for_root_path(root_path, files) do
+  defp load_files_for_root_path(root_path, files, path_pattern, exclude_patterns) do
     root_path
-    |> find_files_for_root_path()
+    |> find_files_for_root_path(path_pattern, exclude_patterns)
     |> Enum.reduce(files, fn path, acc ->
       key = Path.relative_to(path, root_path)
 
-      if Map.has_key?(acc, key) do
-        raise RuntimeError, """
-        Found two source files in different source root paths with the same relative \
-        path: #{key}
+      case Map.fetch(acc, key) do
+        :error ->
+          value = %{lines: source_to_lines(File.read!(path)), root_path: root_path}
+          Map.put(acc, key, value)
 
-        This means that both source files would be reported to Sentry as the same \
-        file. Please rename one of them to avoid this.
-        """
-      else
-        value = source_to_lines(File.read!(path))
-
-        Map.put(acc, key, value)
+        {:ok, %{root_path: existing_root_path}} ->
+          throw({:same_relative_path, key, root_path, existing_root_path})
       end
     end)
   end
 
-  defp find_files_for_root_path(root_path) do
-    path_pattern = Config.source_code_path_pattern()
-    exclude_patterns = Config.source_code_exclude_patterns()
-
-    Path.join(root_path, path_pattern)
+  defp find_files_for_root_path(root_path, path_pattern, exclude_patterns) do
+    root_path
+    |> Path.join(path_pattern)
     |> Path.wildcard()
     |> exclude_files(exclude_patterns)
   end

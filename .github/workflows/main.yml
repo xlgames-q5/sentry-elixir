@@ -2,80 +2,104 @@ name: Continuous Integration
 
 on:
   push:
-    branches: [ master ]
+    branches:
+      - master
+      - release/**
+
   pull_request:
-    branches: [ master ]
 
 env:
   MIX_ENV: test
 
 jobs:
   test:
-
+    name: Test (Elixir ${{ matrix.elixir }}, OTP ${{ matrix.otp }})
     runs-on: ubuntu-20.04
     strategy:
+      fail-fast: false
       matrix:
-        # https://hexdocs.pm/elixir/1.14/compatibility-and-deprecations.html#compatibility-between-elixir-and-erlang-otp
-        elixir: ['1.12.x', '1.13.x', '1.14.x']
-        otp: ['22.3.x', '23.3.x', '24.3.x', '25.2.x']
-        exclude:
-          - elixir: '1.12.x'
-            otp: '25.2.x'
-          - elixir: '1.14.x'
-            otp: '22.3.x'
+        # https://hexdocs.pm/elixir/compatibility-and-deprecations.html#compatibility-between-elixir-and-erlang-otp
         include:
-          - elixir: '1.10.x'
-            otp: '22.3.x'
-          - elixir: '1.11.x'
-            otp: '23.3.x'
-          # - elixir: 'master'
-          #   otp: '24.3.x'
+          # Newest supported Elixir/Erlang pair.
+          - elixir: '1.16'
+            otp: '26.2'
+            lint: true
+            dialyzer: true
+
+          # One version before the last supported one.
+          - elixir: '1.15'
+            otp: '25.3'
+
+          # Oldest supported Elixir/Erlang pair.
+          - elixir: '1.13.4-otp-22'
+            otp: '22.3.4'
 
     steps:
-    - uses: actions/checkout@v2
+    - name: Check out this repository
+      uses: actions/checkout@v4
 
-    - name: Setup elixir
+    - name: Setup Elixir and Erlang
       uses: erlef/setup-beam@v1
       with:
-        elixir-version: ${{ matrix.elixir }} # Define the elixir version [required]
-        otp-version: ${{ matrix.otp }} # Define the OTP version [required]
+        elixir-version: ${{ matrix.elixir }}
+        otp-version: ${{ matrix.otp }}
 
-    - name: Retrieve Mix Dependencies Cache
-      uses: actions/cache@v1
-      id: mix-cache #id to use in retrieve action
+    # We need to manually restore and then save, so that we can save the "_build" directory
+    # *without* the Elixir compiled code in it.
+    - name: Restore Mix dependencies cache
+      uses: actions/cache/restore@v4
+      id: mix-deps-cache
       with:
-        path: deps
-        key: ${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-mix-${{ hashFiles(format('{0}{1}', github.workspace, '/mix.lock')) }}
+        path: |
+          _build
+          deps
+        key: |
+          ${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-mix-${{ hashFiles(format('{0}{1}', github.workspace, '/mix.lock')) }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-mix-
 
-    - name: Install Mix Dependencies
-      if: steps.mix-cache.outputs.cache-hit != 'true'
-      run: |
-        mix local.rebar --force
-        mix local.hex --force
-        mix deps.get
-    - name: Check Formatting
+    - name: Install and compile Mix dependencies
+      if: steps.mix-deps-cache.outputs.cache-hit != 'true'
+      run: mix do deps.get --check-locked, deps.compile
+
+    - name: Save Mix dependencies cache
+      uses: actions/cache/save@v4
+      if: steps.mix-deps-cache.outputs.cache-hit != 'true'
+      with:
+        path: |
+          _build
+          deps
+        key: |
+          ${{ steps.mix-deps-cache.outputs.cache-primary-key }}
+
+    - name: Check formatting
+      if: matrix.lint
       run: mix format --check-formatted
-      if: matrix.elixir == '1.14.x'
 
-    - name: Check Compile Warnings
+    - name: Check compiler warnings
+      if: matrix.lint
       run: mix compile --warnings-as-errors
 
-    - name: Run Tests
+    - name: Run tests
       run: mix test
 
     - name: Retrieve PLT Cache
-      uses: actions/cache@v1
+      uses: actions/cache@v4
+      if: matrix.dialyzer
       id: plt-cache
-      if: matrix.elixir == '1.14.x'
       with:
-        path: priv/plts
-        key: ${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-plts-${{ hashFiles(format('{0}{1}', github.workspace, '/mix.lock')) }}
+        path: plts
+        key: |
+          ${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-plts-${{ hashFiles(format('{0}{1}', github.workspace, '/mix.lock')) }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-plts-
 
     - name: Create PLTs
-      if: steps.plt-cache.outputs.cache-hit != 'true' && matrix.elixir == '1.14.x'
+      if: steps.plt-cache.outputs.cache-hit != 'true' && matrix.dialyzer
       run: |
-        mkdir -p priv/plts
+        mkdir -p plts
         mix dialyzer --plt
+
     - name: Run dialyzer
+      if: matrix.dialyzer
       run: mix dialyzer --no-check --halt-exit-status
-      if: matrix.elixir == '1.14.x'

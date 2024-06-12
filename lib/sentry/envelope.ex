@@ -1,188 +1,95 @@
 defmodule Sentry.Envelope do
   @moduledoc false
+  # https://develop.sentry.dev/sdk/envelopes/
 
-  alias Sentry.{Config, Event, Util}
+  alias Sentry.{Attachment, CheckIn, Config, Event, UUID}
 
-  @type t :: %__MODULE__{
-          event_id: String.t()
+  @type t() :: %__MODULE__{
+          event_id: UUID.t(),
+          items: [Event.t() | Attachment.t() | CheckIn.t(), ...]
         }
 
-  defstruct event_id: nil, items: []
+  @enforce_keys [:event_id, :items]
+  defstruct [:event_id, :items]
 
   @doc """
-  Creates a new empty envelope.
+  Creates a new envelope containing the given event and all of its attachments.
   """
-  @spec new() :: t()
-  def new() do
+  @spec from_event(Event.t()) :: t()
+  def from_event(%Event{event_id: event_id} = event) do
     %__MODULE__{
-      event_id: Util.uuid4_hex(),
-      items: []
+      event_id: event_id,
+      items: [event] ++ event.attachments
     }
   end
 
   @doc """
-  Adds an event to the envelope.
+  Creates a new envelope containing the given check-in.
   """
-  @spec add_event(t(), Event.t()) :: t()
-  def add_event(envelope, %{event_id: event_id} = event) do
-    envelope
-    |> Map.put(:event_id, event_id)
-    |> Map.update!(:items, fn items ->
-      items ++ [event]
-    end)
+  @spec from_check_in(CheckIn.t()) :: t()
+  def from_check_in(%CheckIn{} = check_in) do
+    %__MODULE__{
+      event_id: UUID.uuid4_hex(),
+      items: [check_in]
+    }
   end
 
   @doc """
-  Encodes the envelope into it's binary representation.
+  Encodes the envelope into its binary representation.
+
+  For now, we support only envelopes with a single event and any number of attachments
+  in them.
   """
-  @spec to_binary(t()) :: {:ok, String.t()} | {:error, any()}
-  def to_binary(envelope) do
-    buffer = encode_headers(envelope)
+  @spec to_binary(t()) :: {:ok, binary()} | {:error, any()}
+  def to_binary(%__MODULE__{} = envelope) do
+    json_library = Config.json_library()
 
-    # write each item
-    Enum.reduce_while(envelope.items, {:ok, buffer}, fn item, {:ok, acc} ->
-      # encode to a temporary buffer to get the length
-      case encode_item(item) do
-        {:ok, encoded_item} ->
-          length = byte_size(encoded_item)
-          type_name = item_type_name(item)
-
-          {:cont,
-           {:ok,
-            acc <>
-              "{\"type\":\"#{type_name}\",\"length\":#{length}}\n" <>
-              encoded_item <>
-              "\n"}}
-
-        {:error, error} ->
-          {:halt, {:error, error}}
+    headers_iodata =
+      case envelope.event_id do
+        nil -> "{{}}\n"
+        event_id -> ~s({"event_id":"#{event_id}"}\n)
       end
-    end)
+
+    items_iodata = Enum.map(envelope.items, &item_to_binary(json_library, &1))
+
+    {:ok, IO.iodata_to_binary([headers_iodata, items_iodata])}
+  catch
+    {:error, _reason} = error -> error
   end
 
-  @doc """
-  Decodes the envelope from it's binary representation.
-  """
-  @spec from_binary(String.t()) :: {:ok, t()} | {:error, :invalid_envelope}
-  def from_binary(binary) do
-    with {:ok, {raw_headers, raw_items}} <- decode_lines(binary),
-         {:ok, headers} <- decode_headers(raw_headers),
-         {:ok, items} <- decode_items(raw_items) do
-      {:ok,
-       %__MODULE__{
-         event_id: headers["event_id"] || nil,
-         items: items
-       }}
-    else
-      _e -> {:error, :invalid_envelope}
+  defp item_to_binary(json_library, %Event{} = event) do
+    case event |> Sentry.Client.render_event() |> json_library.encode() do
+      {:ok, encoded_event} ->
+        header = ~s({"type": "event", "length": #{byte_size(encoded_event)}})
+        [header, ?\n, encoded_event, ?\n]
+
+      {:error, _reason} = error ->
+        throw(error)
     end
   end
 
-  @spec from_binary!(String.t()) :: t() | no_return()
-  def from_binary!(binary) do
-    {:ok, envelope} = from_binary(binary)
-    envelope
+  defp item_to_binary(json_library, %Attachment{} = attachment) do
+    header = %{"type" => "attachment", "length" => byte_size(attachment.data)}
+
+    header =
+      for {key, value} <- Map.take(attachment, [:filename, :content_type, :attachment_type]),
+          not is_nil(value),
+          into: header,
+          do: {Atom.to_string(key), value}
+
+    {:ok, header_iodata} = json_library.encode(header)
+
+    [header_iodata, ?\n, attachment.data, ?\n]
   end
 
-  # Returns the event in the envelope if one exists.
-  @spec event(t()) :: Event.t() | nil
-  def event(envelope) do
-    envelope.items
-    |> Enum.filter(fn item -> is_event?(item) end)
-    |> List.first()
-  end
+  defp item_to_binary(json_library, %CheckIn{} = check_in) do
+    case check_in |> CheckIn.to_map() |> json_library.encode() do
+      {:ok, encoded_check_in} ->
+        header = ~s({"type": "check_in", "length": #{byte_size(encoded_check_in)}})
+        [header, ?\n, encoded_check_in, ?\n]
 
-  defp is_event?(event), do: match?(%{__struct__: Sentry.Event}, event)
-
-  #
-  # Encoding
-  #
-
-  defp item_type_name(%Event{}), do: "event"
-
-  defp item_type_name(unexpected),
-    do: raise("unexpected item type '#{unexpected}' in Envelope.to_binary/1")
-
-  defp encode_headers(envelope) do
-    case envelope.event_id do
-      nil -> "{{}}\n"
-      event_id -> "{\"event_id\":\"#{event_id}\"}\n"
+      {:error, _reason} = error ->
+        throw(error)
     end
   end
-
-  defp encode_item(%Event{} = event) do
-    event
-    |> Sentry.Client.render_event()
-    |> Config.json_library().encode()
-  end
-
-  defp encode_item(item), do: item
-
-  #
-  # Decoding
-  #
-
-  # Steps over the item pairs in the envelope body. The item header is decoded
-  # first so it can be used to decode the item following it.
-  @spec decode_items([String.t()]) :: {:ok, [map()]} | {:error, any()}
-  defp decode_items(raw_items) do
-    item_pairs = Enum.chunk_every(raw_items, 2, 2, :discard)
-
-    Enum.reduce_while(item_pairs, {:ok, []}, fn [k, v], {:ok, acc} ->
-      with {:ok, item_header} <- Config.json_library().decode(k),
-           {:ok, item} <- decode_item(item_header, v) do
-        {:cont, {:ok, acc ++ [item]}}
-      else
-        {:error, e} -> {:halt, {:error, e}}
-      end
-    end)
-  end
-
-  defp decode_item(%{"type" => "event"}, data) do
-    result = Config.json_library().decode(data)
-
-    case result do
-      {:ok, fields} ->
-        {:ok,
-         %Sentry.Event{
-           breadcrumbs: fields["breadcrumbs"],
-           culprit: fields["culprit"],
-           environment: fields["environment"],
-           event_id: fields["event_id"],
-           event_source: fields["event_source"],
-           exception: fields["exception"],
-           extra: fields["extra"],
-           fingerprint: fields["fingerprint"],
-           level: fields["level"],
-           message: fields["message"],
-           modules: fields["modules"],
-           original_exception: fields["original_exception"],
-           platform: fields["platform"],
-           release: fields["release"],
-           request: fields["request"],
-           server_name: fields["server_name"],
-           stacktrace: %{
-             frames: fields["stacktrace"]["frames"]
-           },
-           tags: fields["tags"],
-           timestamp: fields["timestamp"],
-           user: fields["user"]
-         }}
-
-      {:error, e} ->
-        {:error, "Failed to decode event item: #{e}"}
-    end
-  end
-
-  defp decode_item(%{"type" => type}, _data), do: {:error, "unexpected item type '#{type}'"}
-  defp decode_item(_, _data), do: {:error, "Missing item type header"}
-
-  defp decode_lines(binary) do
-    case String.split(binary, "\n") do
-      [headers | items] -> {:ok, {headers, items}}
-      _ -> {:error, :missing_header}
-    end
-  end
-
-  defp decode_headers(raw_headers), do: Config.json_library().decode(raw_headers)
 end

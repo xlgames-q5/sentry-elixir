@@ -1,6 +1,208 @@
 # Changelog
 
-## Unreleased
+## 10.6.1
+
+### Various fixes & improvements
+
+- Only fetch LiveView socket info if root (#734) by @whatyouhide
+
+## 10.6.0
+
+### Various fixes & improvements
+
+- Add overload protection to `:logger` handler (#727).
+- Expose DSN via new `Sentry.get_dsn/0` (#731).
+- Fix a bug with nameless Quantum cron jobs support in the Quantum integration.
+
+## 10.5.0
+
+### Various fixes & improvements
+
+- Improve resilience of looking at Retry-After (ab7fbb96) by @whatyouhide
+- Fix compilation error (cf93d226) by @whatyouhide
+- Honor Retry-After responses from Sentry (5bad4b56) by @whatyouhide
+- Improve "GenServer terminating" reports (#723) by @whatyouhide
+- Don't report empty stacktraces (bed583f5) by @whatyouhide
+- Add LiveView hook (#722) by @whatyouhide
+- FIx monitor slug in Oban + Quantum integrations (#721) by @whatyouhide
+
+## 10.4.0
+
+### Various fixes & improvements
+
+- Add rate-limiting to `Sentry.LoggerHandler`.
+- Improve reporting of process crashes in `Sentry.LoggerHandler`.
+- Fix loading configuration in `mix sentry.send_test_event`.
+- Fix JSON libraries that raise errors when encoding.
+- Allow `Sentry.LoggerBackend` and `Sentry.LoggerHandler` to use Sentry metadata.
+- Validate configuration passed to `Sentry.LoggerHandler`.
+
+## 10.3.0
+
+### Various fixes & improvements
+
+- Fix compilation warning (83a727a3) by @whatyouhide
+- Move some integrations-related modules around (8eeca145) by @whatyouhide
+- Add integrated support for capturing Oban errors (#705) by @whatyouhide
+
+## 10.2.1
+
+### Various fixes & improvements
+
+- Fix automatic start integrations (#704) by @vshev4enko
+- Fix wrong CLI argument in CI (#701) by @vshev4enko
+- Update changelog (d6da0fbe) by @whatyouhide
+
+## 10.2.0
+
+### New features
+
+- Add support for [Sentry Cron](https://docs.sentry.io/product/crons/) monitoring, with built-in support for [Oban](https://github.com/sorentwo/oban) and [Quantum](https://github.com/quantum-elixir/quantum-core).
+- Add `Sentry.capture_check_in/1`, which can be used to manually check-in crons.
+- Add `--output` flag for the `mix sentry.package_source_code` task. This can be useful for read-only build environments.
+- Introduce testing helpers in `Sentry.Test`.
+- Add the `:url_scrubber` option to `Sentry.PlugContext`.
+
+### Various fixes & improvements
+
+- Improve error message on unavailable config.
+
+## 10.1.0
+
+### Various fixes & improvements
+
+- Add `Sentry.Interfaces.Thread` to fix stacktraces in messages.
+- Add the `--type` and `--no-stacktrace` flags to `mix sentry.send_test_message`.
+- Add support for interpolating messages (with `%s`) placeholders. See `Sentry.capture_message/2`.
+- Add support for attachments; see `Sentry.Attachment` and `Sentry.Context.add_attachment/1`.
+
+## 10.0.3
+
+### Various fixes & improvements
+
+- No "app.config" in "mix sentry.package_source_code" (#661) by @whatyouhide
+- Add upgrade guide links to the changelog (#659) by @axelson
+
+## 10.0.2
+
+### Various fixes & improvements
+
+- Fix infinite logging loop (#657) by @whatyouhide
+- Remove reference to "before_send_event" in README (f1650502) by @whatyouhide
+- Don't report events if DSN is not configured (#655) by @whatyouhide
+
+## 10.0.1
+
+### Various fixes & improvements
+
+- Fix reading of config in "mix sentry.package_source_code" (#653)
+- Don't ship Dialyzer PLTs with releases (#654)
+
+## 10.0.0
+
+[9.x -> 10.0 Upgrade Guide](https://hexdocs.pm/sentry/upgrade-10-x.html)
+
+- `:report_deps` now reports all loaded applications at the time the `:sentry` application starts. This is not a compile-time configuration option anymore.
+- Add the `mix sentry.package_source_code` Mix task. See the upgrade guide for more information.
+- Add `~r"/test/"` to the default source code exclude patterns (see the `:source_code_exclude_patterns` option).
+- `:environment_name` now defaults to `production` (if it wasn't configured explicitly and if the `SENTRY_ENVIRONMENT` environment variable is not set).
+- Hard-deprecate `:included_environments`. To control whether to send events to Sentry, use the `:dsn` configuration option instead. `:included_environments` now emits a warning if used, but will still work until v11.0.0 of this library.
+- Hard-deprecate `:before_send_event` in favor of the new `:before_send`. This brings this SDK in line with all other Sentry SDKs.
+
+## 9.1.0
+
+### Various fixes & improvements
+
+- Attempt to scrub all `Plug.Conn`s in `Sentry.PlugCapture` (#619) by @whatyouhide
+- Fix typespec for the `Sentry.Context.t/0` type (#618) by @whatyouhide
+- Apply `:sample_rate` *after* event callbacks, rather than *before* (ab5c7485) by @whatyouhide
+
+## 9.0.0
+
+[8.x -> 9.0 Upgrade Guide](https://hexdocs.pm/sentry/upgrade-9-x.html)
+
+### Breaking changes
+
+- Removed `Sentry.Sources`
+- Removed `Sentry.Client`, as it's an internal module
+- Removed the `Sentry.Event.sentry_exception/0` type
+- Removed `Sentry.Event.add_metadata/1`
+- Removed `Sentry.Event.culprit_from_stacktrace/1`
+- Removed `Sentry.Event.do_put_source_context/3`
+- Removed the `:async` value for the `:result` option in `Sentry.send_event/2` (and friends)
+- Removed `Sentry.CrashError` — now, crash reports (detected through `Sentry.LoggerBackend`) that do not contain exceptions are reported as *messages* in Sentry
+- Changed the shape of the `Sentry.Event` struct - check out the new fields (and typespec for `Sentry.Event.t/0`)
+
+### Various fixes & improvements
+
+- Add `Sentry.LoggerHandler`, which is a `:logger` handler rather than a `Logger` backend
+- Make the `Sentry.HTTPClient.child_spec/0` callback optional
+- Add `:all` as a possible value of the `:metadata` configuration option for `Sentry.LoggerBackend`
+- Add `:all` as a possible value for the `:included_environment` configuration option
+- Add `Sentry.Interfaces` with all the child modules, which are useful if you're working directly with the Sentry API
+- Fix an issue with JSON-encoding non-encodable terms (such as PIDs, which are pretty common)
+
+### Deprecations
+
+- Soft-deprecate `Sentry.EventFilter` in favour of `:before_send_event` callbacks.
+
+### Various fixes & improvements
+
+- Remove manually-entered entries from the CHANGELOG (48cf37d9) by @whatyouhide
+- Don't cover test/support in tests (8cfe14b1) by @whatyouhide
+- Make two more funs private in Sentry.Event (340ba143) by @whatyouhide
+- Add excoveralls for code coverage (58d94cf2) by @whatyouhide
+- Clean up Sentry.Config (f996c7d3) by @whatyouhide
+- Revert default :included_environments to [:prod] (d33bf19d) by @whatyouhide
+- Send async events right away without queueing (#612) by @whatyouhide
+- Make Sentry.Interfaces.Request a struct (#611) by @whatyouhide
+- Improve some tests (59e8ebb0) by @whatyouhide
+- Add Sentry logo to the docs (6d27eacf) by @whatyouhide
+- Polish docs for "mix sentry.send_test_event" (903aeb93) by @whatyouhide
+- Update changelog and error messages (f6f577f4) by @whatyouhide
+- Soft-deprecate Sentry.EventFilter (#608) by @whatyouhide
+- Improve Sentry.Event struct definition (#609) by @whatyouhide
+- Clean up docs and tests for "mix sentry.send_test_event" (#610) by @whatyouhide
+- Add Sentry.LoggerHandler (#607) by @whatyouhide
+- Remove Sentry.CrashError and improve EXIT reporting (#606) by @whatyouhide
+- Support :all in Sentry.LoggerBackend's :metadata (#605) by @whatyouhide
+- Optimize JSON sanitization step (b96d6cfd) by @whatyouhide
+- Accept all environments by default (#604) by @whatyouhide
+- Add example about alternative HTTP client to docs (38e80edf) by @whatyouhide
+- Make Sentry.HTTPClient.child_spec/0 optional (#603) by @whatyouhide
+- Clean up a bunch of little non-important things (18e83ae9) by @whatyouhide
+- Simplify test GenServer (30a9828e) by @whatyouhide
+
+## 8.1.0
+
+### Various fixes & improvements
+
+- Bump min craft version to 1.4.2 (795bfd12) by @sl0thentr0py
+- Add github target to craft (ef563cc5) by @sl0thentr0py
+- Bump min craft version (56516be2) by @sl0thentr0py
+- Improve deprecation of Sentry.Config.root_source_code_path/0 (#558) by @whatyouhide
+- Wrap HTTP requests in try/catch (#515) by @ruslandoga
+- Remove extra config files (#556) by @yordis
+- Remove use of deprecated Mix.Config (#555) by @whatyouhide
+- Add release/** branches to ci for craft (dfaffb9f) by @sl0thentr0py
+- Fix typo in moduledoc (#534) by @louisvisser
+- Check :hackney application when starting (#554) by @whatyouhide
+- feat(event): filter more exceptions by default (#550) by @gpouilloux
+- Fix example configuration for Sentry.Sources (#543) by @scudelletti
+- Use module attribute for dictionary key consistently (#537) by @tmecklem
+- Fix send_event/2 typespec (#545) by @ruslandoga
+- Update badges in the README (#548) by @ruslandoga
+- Update ex_docs to 0.29+ (#549) by @ruslandoga
+- Fix Elixir 1.15 warnings (#553) by @dustinfarris
+- Add :remote_address_reader PlugContext option (#519) by @michallepicki
+- Traverse full domain list when checking for excluded domains (#508) by @martosaur
+- Add craft with target hex (#532) by @sl0thentr0py
+- Add Sentry to LICENSE (#530) by @sl0thentr0py
+- Update ci setup-beam action name (#531) by @sl0thentr0py
+- allow logging from tasks (#517) by @ruslandoga
+- Improve DSN parsing and Endpoint building (#507) by @AtjonTV
+
+_Plus 14 more_
 
 ## 8.0.6 (2021-09-28)
 
